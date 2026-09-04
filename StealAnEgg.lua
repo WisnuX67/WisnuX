@@ -1669,7 +1669,6 @@ task.spawn(function()
             local _r = _n and _n:FindFirstChild("RE/BatSwing/Trigger")
             if _r then pcall(function() _r:FireServer() end) end
         end
-        end
     end
 end)
 
