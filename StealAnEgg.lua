@@ -13,6 +13,7 @@ local Workspace         = game:GetService("Workspace")
 local UserInputService  = game:GetService("UserInputService")
 local LocalPlayer       = Players.LocalPlayer
 
+-- ============================================================
 -- SPEED BYPASS (Lutosys/opensrc)
 -- ============================================================
 local _speedBypassConn   = nil
@@ -82,9 +83,6 @@ local function stopSpeedBypass()
     local h = _activeHum(); if h then h.WalkSpeed = 16 end
 end
 
--- Speed bypass di-init saat farm ON, bukan saat load
--- pcall(initSpeedBypass)
-
 -- ============================================================
 -- REMOTE HELPERS
 -- ============================================================
@@ -108,7 +106,6 @@ local function fireRemote(name, ...)
     if not remote then warn("[RE] not found: "..name); return end
     pcall(function(...) remote:FireServer(...) end, ...)
 end
-
 
 -- ============================================================
 -- MODULE LOADER
@@ -1665,9 +1662,12 @@ task.spawn(function()
     while true do
         task.wait(State.batInterval)
         if State.batAura then
-            local _n = ReplicatedStorage:FindFirstChild("Packages") and ReplicatedStorage.Packages:FindFirstChild("Networking")
+            local _n = getNet()
             local _r = _n and _n:FindFirstChild("RE/BatSwing/Trigger")
-            if _r then pcall(function() _r:FireServer() end) end
+            if _r then
+                local seed = ("%s:100:%s"):format(tostring(LocalPlayer.UserId), tostring(math.floor(Workspace:GetServerTimeNow() * 1000)))
+                pcall(function() _r:FireServer(nil, seed) end)
+            end
         end
     end
 end)
@@ -1714,6 +1714,191 @@ local function setAntiAfk(enabled)
             game:GetService("VirtualUser"):Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
         end)
     end)
+end
+
+-- FPS + Ping Counter (ScreenGui)
+local _statsGui = nil
+local function updateStatsGui(show)
+    if not show then
+        if _statsGui then _statsGui:Destroy(); _statsGui = nil end
+        return
+    end
+    if _statsGui then return end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "SAE_Stats"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.DisplayOrder = 99998
+    sg.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(120, 36)
+    frame.Position = UDim2.new(1, -130, 0, 8)
+    frame.BackgroundColor3 = Color3.fromRGB(15,15,20)
+    frame.BackgroundTransparency = 0.3
+    frame.BorderSizePixel = 0
+    frame.Parent = sg
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0,6)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1,0,1,0)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.fromRGB(220,220,230)
+    lbl.TextSize = 11
+    lbl.Font = Enum.Font.GothamBold
+    lbl.Text = "FPS: -- | Ping: --"
+    lbl.Parent = frame
+
+    _statsGui = sg
+
+    -- Update loop
+    local lastTime = tick()
+    local frameCount = 0
+    RunService.RenderStepped:Connect(function()
+        if not _statsGui or not _statsGui.Parent then return end
+        frameCount += 1
+        local now = tick()
+        if now - lastTime >= 1 then
+            local fps = math.floor(frameCount / (now - lastTime))
+            frameCount = 0
+            lastTime = now
+            local ping = 0
+            pcall(function()
+                ping = math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+            end)
+            lbl.Text = string.format("FPS: %d | Ping: %dms", fps, ping)
+        end
+    end)
+end
+
+-- ============================================================
+-- FARM CYCLE
+-- ============================================================
+local function farmCycle()
+    if State.busy or not State.running then return end
+    State.busy = true
+    local _busyStart = tick()
+
+    pcall(function()
+        if not loadModules() then return end
+        local r = root(); local h2 = hum()
+        if not r or not h2 then return end
+
+        -- Busy timeout safety: reset kalau > 30 detik
+        if tick() - _busyStart > 30 then
+            State.busy = false; return
+        end
+
+        -- 1. Cari telur
+        local rec, model = findBestEgg()
+        if not rec or not model then
+            State.lockedRecord = nil
+            return
+        end
+
+        local part = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+        if not part then State.lockedRecord = nil; return end
+
+        -- 2. Jalan ke telur (gak snap, jalan biasa)
+        if not walkTo(part.Position, 15, false) then return end
+        if not State.running then return end
+
+        -- 3. Claim -- kena guardian: reset busy langsung, retry di cycle berikut
+        r = root()
+        if not r then State.busy = false; return end
+        local dist = (r.Position - part.Position).Magnitude
+        if dist > 8 then
+            -- lockedRecord tetap biar retry egg yang sama
+            State.busy = false
+            return
+        end
+
+        local slotKey = nil
+        pcall(function()
+            if AreaEggSlotIdentity and rec.AreaId and rec.NestId then
+                slotKey = AreaEggSlotIdentity.SlotKey(rec.AreaId, rec.NestId)
+            end
+        end)
+
+        -- Claim -- retry 3x, cek egg masuk character tiap attempt
+        local claimed = false
+        for _ = 1, 3 do
+            pcall(function() EggState.CarryFieldEgg(rec.Uid, slotKey) end)
+            local prompt = model:FindFirstChild("CarryAreaEgg", true)
+                or model:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if prompt then
+                pcall(function()
+                    prompt.Enabled = true
+                    prompt.HoldDuration = 0
+                    if typeof(fireproximityprompt) == "function" then
+                        fireproximityprompt(prompt, 0)
+                    end
+                end)
+            end
+            -- Cek egg masuk character atau backpack
+            local char = LocalPlayer.Character
+            if char then
+                for _, t in ipairs(char:GetChildren()) do
+                    if t:IsA("Tool") and (t:GetAttribute("ItemType") == "AssetEgg"
+                        or t:GetAttribute("ItemType") == "PetEgg"
+                        or AREA_SET[t.Name]) then
+                        claimed = true; break
+                    end
+                end
+            end
+            if not claimed then
+                for _, t in ipairs(LocalPlayer.Backpack:GetChildren()) do
+                    if t:IsA("Tool") and (t:GetAttribute("ItemType") == "AssetEgg"
+                        or t:GetAttribute("ItemType") == "PetEgg"
+                        or AREA_SET[t.Name]) then
+                        claimed = true; break
+                    end
+                end
+            end
+            if claimed then break end
+        end
+        State.lockedRecord = nil
+
+        -- 4. Tunggu rubberband selesai sebelum balik
+        -- Server kadang nge-push balik karakter setelah claim
+        local rbTimeout = tick() + 2
+        while tick() < rbTimeout do
+            local r3 = root()
+            if not r3 then break end
+            local vel = r3.AssemblyLinearVelocity
+            local hVel = Vector3.new(vel.X, 0, vel.Z).Magnitude
+            -- Kalau velocity sudah rendah = rubberband selesai
+            if hVel < 8 then break end
+            task.wait(0.05)
+        end
+
+        -- 5. Jalan balik ke safe coords (no teleport)
+        walkTo(START_POS, 15, false)
+        if not State.running then return end
+
+        State.stealCount += 1
+    end)
+
+    local h2 = hum()
+    if h2 then h2.WalkSpeed = 16 end
+    State.busy = false
+end
+
+-- ============================================================
+-- ESP SYSTEM (VD Style)
+-- ============================================================
+local EspHighlights = {}
+local EspBillboards = {}
+
+local function clearESP(uid)
+    if EspHighlights[uid] then
+        pcall(function() EspHighlights[uid]:Destroy() end)
+        EspHighlights[uid] = nil
+    end
+    if EspBillboards[uid] then
+        pcall(function() EspBillboards[uid]:Destroy() end)
+        EspBillboards[uid] = nil
+    end
 end
 
 local function createESP(model, uid, rarityCol, dispName, rarityName, earning)
@@ -2093,7 +2278,7 @@ end
 
 
 -- ============================================================
--- WISNU UI (MugiHub)
+-- WISNU UI
 -- ============================================================
 local MugiHub = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/WisnuX67/Wisnu-ui/main/source.lua"
@@ -2114,10 +2299,10 @@ local RARITIES = {
 }
 
 local Window = MugiHub:CreateWindow({
-    Title = "WISNU HUB",
+    Title       = "WISNU HUB",
     Description = "Steal An Egg v2.0",
-    TabWidth = 110,
-    Keybind = Enum.KeyCode.RightShift,
+    TabWidth    = 110,
+    Keybind     = Enum.KeyCode.F3,
 })
 
 local Tabs = {
@@ -2128,18 +2313,15 @@ local Tabs = {
     Config = Window:CreateTab({ Name = "Config" }),
 }
 
--- Helper buat section
 local function Sec(tab, name) return tab:AddSection(name) end
 
 -- ============================================================
 -- FARM TAB
 -- ============================================================
 local secSteal = Sec(Tabs.Farm, "Auto Steal")
-
 secSteal:AddToggle({ Title = "Auto Steal", Default = false, Callback = function(v)
     State.running = v
     if v then
-        -- Init speed bypass saat farm ON (bukan saat load)
         if not _speedBypassActive then pcall(initSpeedBypass) end
         loadModules(); doHumanoidBypass()
         Notify("SAE","Farm started!",2)
@@ -2150,46 +2332,31 @@ secSteal:AddToggle({ Title = "Auto Steal", Default = false, Callback = function(
         State.running = false; State.busy = false; State.lockedRecord = nil
         if _camConn then _camConn:Disconnect(); _camConn = nil end
         if _speedConn then _speedConn:Disconnect(); _speedConn = nil end
+        stopSpeedBypass()
         Notify("SAE","Farm stopped.",2)
-        task.delay(0.3, function()
-            local char = LocalPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if hrp then pcall(function() hrp.CFrame = CFrame.new(0,-1000,0) end) end
-        end)
+        task.delay(0.3, function() pcall(function() LocalPlayer:LoadCharacter() end) end)
     end
 end })
-
 secSteal:AddToggle({ Title = "Anti-Guard", Default = true, Callback = function(v) State.antiGuard = v end })
 secSteal:AddToggle({ Title = "Bat Aura", Default = false, Callback = function(v) State.batAura = v end })
-secSteal:AddToggle({ Title = "No Knockback", Default = false, Callback = function(v)
-    State.noKnockback = v; if v then applyNoKnockback() end
-end })
-
-secSteal:AddSlider({ Title = "Walk Speed", Min = 16, Max = 500, Default = 120, Increment = 1,
+secSteal:AddToggle({ Title = "No Knockback", Default = false,
+    Callback = function(v) State.noKnockback = v; if v then applyNoKnockback() end end })
+secSteal:AddSlider({ Title = "Walk Speed", Min = 16, Max = 500, Default = 120, Increment = 0,
     Callback = function(v) State.speed = v end })
-
-local secRarity = Sec(Tabs.Farm, "Farm Filter")
-secRarity:AddDropdown({ Title = "Target Rarities", Options = RARITIES, Default = {}, Multi = true,
+secSteal:AddDropdown({ Title = "Target Rarities", Options = RARITIES, Default = {}, Multi = true,
     Callback = function(v) State.targetRarities = {}; for k,s in pairs(v) do if s then State.targetRarities[k]=true end end end })
-secRarity:AddDropdown({ Title = "Target Areas", Options = AREA_NAMES, Default = {}, Multi = true,
+secSteal:AddDropdown({ Title = "Target Areas", Options = AREA_NAMES, Default = {}, Multi = true,
     Callback = function(v) State.targetAreas = {}; for k,s in pairs(v) do if s then State.targetAreas[k]=true end end end })
-secRarity:AddToggle({ Title = "Priority Rarity", Default = true,
+secSteal:AddToggle({ Title = "Priority Rarity", Default = true,
     Callback = function(v) State.priorityRarity = v end })
-secRarity:AddDropdown({ Title = "Target Mutations", Options = MUTATIONS, Default = {}, Multi = true,
+secSteal:AddDropdown({ Title = "Target Mutations", Options = MUTATIONS, Default = {}, Multi = true,
     Callback = function(v) State.targetMutations = {}; for k,s in pairs(v) do if s then State.targetMutations[k]=true end end end })
-secRarity:AddInput({ Title = "Min Earning Rate", Default = "0",
+secSteal:AddInput({ Title = "Min Earning Rate", Default = "0",
     Callback = function(v) State.minEarningRate = tonumber(v) or 0 end })
-secRarity:AddInput({ Title = "Min Weight", Default = "0",
+secSteal:AddInput({ Title = "Min Weight (kg)", Default = "0",
     Callback = function(v) State.minModelWeight = tonumber(v) or 0 end })
-secRarity:AddInput({ Title = "Max Weight", Default = "0",
+secSteal:AddInput({ Title = "Max Weight (kg)", Default = "0",
     Callback = function(v) local n=tonumber(v) or 0; State.maxModelWeight = n==0 and 999999999 or n end })
-
-local secBloomery = Sec(Tabs.Farm, "Auto Bloomery")
-secBloomery:AddToggle({ Title = "Auto Bloomery", Default = false,
-    Callback = function(v) if v then task.spawn(startAutoBloomery) else stopAutoBloomery() end end })
-secBloomery:AddButton({ Title = "Equip Field Bat", Callback = function() pcall(wearFieldBat) end })
-secBloomery:AddButton({ Title = "Gather Petal", Callback = function() pcall(gatherPetal) end })
-secBloomery:AddButton({ Title = "Mutate Egg", Callback = function() pcall(mutateEgg) end })
 
 local secVisual = Sec(Tabs.Farm, "Visual")
 secVisual:AddToggle({ Title = "Egg ESP", Default = false,
@@ -2200,8 +2367,21 @@ secVisual:AddSlider({ Title = "Float Height", Min = 1, Max = 10, Default = 3, In
     Callback = function(v) State.floatHeight = v end })
 secVisual:AddToggle({ Title = "Animation", Default = true,
     Callback = function(v) State.animEnabled = v; updateAnim() end })
+secVisual:AddToggle({ Title = "FPS & Ping Counter", Default = false,
+    Callback = function(v) updateStatsGui(v) end })
+secVisual:AddToggle({ Title = "Reduce Map", Default = false,
+    Callback = function(v) State.reducedMap = v; setReduceMap(v) end })
+secVisual:AddToggle({ Title = "Cycle Panel", Default = false,
+    Callback = function(v) _cycleGui.Enabled = v end })
 secVisual:AddButton({ Title = "Upgrade Base", Callback = function() upgradeBase() end })
 secVisual:AddButton({ Title = "Upgrade Treadmill", Callback = function() upgradeTreadmill(1) end })
+
+local secBloomery = Sec(Tabs.Farm, "Auto Bloomery")
+secBloomery:AddToggle({ Title = "Auto Bloomery", Default = false,
+    Callback = function(v) if v then task.spawn(startAutoBloomery) else stopAutoBloomery() end end })
+secBloomery:AddButton({ Title = "Equip Field Bat", Callback = function() pcall(wearFieldBat) end })
+secBloomery:AddButton({ Title = "Gather Petal", Callback = function() pcall(gatherPetal) end })
+secBloomery:AddButton({ Title = "Mutate Egg", Callback = function() pcall(mutateEgg) end })
 
 -- ============================================================
 -- AUTO TAB
@@ -2249,24 +2429,19 @@ secFav:AddDropdown({ Title = "Target Rarities", Options = RARITIES, Default = {}
     Callback = function(v) State.favMinRarities = {}; for k,s in pairs(v) do if s then State.favMinRarities[k]=true end end end })
 secFav:AddButton({ Title = "Favorite Now", Callback = function() pcall(runAutoFavorite); Notify("Favorite","Done!",2) end })
 
-local secParasite = Sec(Tabs.Auto, "Monster Parasite")
-secParasite:AddToggle({ Title = "Auto Feed Parasite", Default = false,
-    Callback = function(v) if v then startAutoFeedParasite() else stopAutoFeedParasite() end end })
-secParasite:AddButton({ Title = "Claim Chest", Callback = function() task.spawn(claimParasiteChest); Notify("Parasite","Chest claimed!",2) end })
-
 -- ============================================================
 -- STORE TAB
 -- ============================================================
-local secSell = Sec(Tabs.Store, "Auto Sell")
-secSell:AddToggle({ Title = "Enable Auto Sell", Default = false,
+local secSell = Sec(Tabs.Store, "Auto Sell Pet")
+secSell:AddToggle({ Title = "Enable Auto Sell Pet", Default = false,
     Callback = function(v) State.sellEnabled = v; if v then loadModules() end end })
 secSell:AddToggle({ Title = "Sell Every Pet", Default = false,
     Callback = function(v) State.sellAll = v end })
-secSell:AddSlider({ Title = "Pet Interval (s)", Min = 1, Max = 120, Default = 5, Increment = 1,
-    Callback = function(v) State.sellPetInterval = v end })
+secSell:AddSlider({ Title = "Interval (s)", Min = 1, Max = 120, Default = 5, Increment = 1,
+    Callback = function(v) State.sellInterval = v end })
 secSell:AddDropdown({ Title = "Sell Pet Rarities", Options = RARITIES, Default = {}, Multi = true,
     Callback = function(v) State.sellPetMaxRarities = {}; for k,s in pairs(v) do if s then State.sellPetMaxRarities[k]=true end end end })
-secSell:AddButton({ Title = "Sell Now", Callback = function() loadModules(); pcall(runAutoSell); Notify("Sell","Triggered!",2) end })
+secSell:AddButton({ Title = "Sell Pet Now", Callback = function() loadModules(); pcall(runAutoSell); Notify("Sell","Triggered!",2) end })
 
 local secSellEgg = Sec(Tabs.Store, "Auto Sell Egg")
 secSellEgg:AddToggle({ Title = "Enable", Default = false,
@@ -2298,26 +2473,21 @@ secFuse:AddButton({ Title = "Auto Fuse", Callback = function()
     if _fuseUids[1] and _fuseUids[2] and _fuseUids[3] then
         task.spawn(function() autoFuse(_fuseUids[1], _fuseUids[2], _fuseUids[3]) end)
         Notify("Fuse","Started!",2)
-    else
-        Notify("Fuse","Isi 3 UID dulu!",2)
-    end
+    else Notify("Fuse","Isi 3 UID dulu!",2) end
 end })
+
+local secParasite = Sec(Tabs.Store, "Monster Parasite")
+secParasite:AddToggle({ Title = "Auto Feed Parasite", Default = false,
+    Callback = function(v) if v then startAutoFeedParasite() else stopAutoFeedParasite() end end })
+secParasite:AddButton({ Title = "Claim Chest", Callback = function() task.spawn(claimParasiteChest); Notify("Parasite","Chest claimed!",2) end })
 
 -- ============================================================
 -- MISC TAB
 -- ============================================================
-local secMiscVis = Sec(Tabs.Misc, "Visual")
-secMiscVis:AddToggle({ Title = "FPS & Ping Counter", Default = false,
-    Callback = function(v) updateStatsGui(v) end })
-secMiscVis:AddToggle({ Title = "Reduce Map", Default = false,
-    Callback = function(v) State.reducedMap = v; setReduceMap(v) end })
-secMiscVis:AddToggle({ Title = "Cycle Panel", Default = false,
-    Callback = function(v) _cycleGui.Enabled = v end })
-
-local secMiscUtil = Sec(Tabs.Misc, "Utility")
-secMiscUtil:AddToggle({ Title = "Anti AFK", Default = true,
+local secUtil = Sec(Tabs.Misc, "Utility")
+secUtil:AddToggle({ Title = "Anti AFK", Default = true,
     Callback = function(v) State.antiAfk = v; setAntiAfk(v) end })
-secMiscUtil:AddToggle({ Title = "Anti Staff", Default = true,
+secUtil:AddToggle({ Title = "Anti Staff", Default = true,
     Callback = function(v)
         if v then task.spawn(function()
             while v do
@@ -2331,10 +2501,10 @@ secMiscUtil:AddToggle({ Title = "Anti Staff", Default = true,
             end
         end) end
     end })
-secMiscUtil:AddButton({ Title = "Rejoin", Callback = function()
+secUtil:AddButton({ Title = "Rejoin", Callback = function()
     pcall(function() game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
 end })
-secMiscUtil:AddButton({ Title = "Server Hop", Callback = function()
+secUtil:AddButton({ Title = "Server Hop", Callback = function()
     pcall(function()
         local HS = game:GetService("HttpService")
         local TPS = game:GetService("TeleportService")
@@ -2343,23 +2513,25 @@ secMiscUtil:AddButton({ Title = "Server Hop", Callback = function()
         for _, s in ipairs(result.data or {}) do
             if s.id ~= game.JobId and s.playing < s.maxPlayers then table.insert(servers, s) end
         end
-        if #servers > 0 then
-            TPS:TeleportToPlaceInstance(game.PlaceId, servers[math.random(1,#servers)].id, LocalPlayer)
+        if #servers > 0 then TPS:TeleportToPlaceInstance(game.PlaceId, servers[math.random(1,#servers)].id, LocalPlayer)
         else Notify("Server Hop","No servers found",3) end
     end)
 end })
-
-local secGuard = Sec(Tabs.Misc, "Guard")
-secGuard:AddButton({ Title = "Listen Guard Warning", Callback = function()
+secUtil:AddButton({ Title = "Upgrade Base", Callback = function() upgradeBase() end })
+secUtil:AddButton({ Title = "Upgrade Treadmill", Callback = function() upgradeTreadmill(1) end })
+secUtil:AddButton({ Title = "Listen Guard Warning", Callback = function()
     listenGuardWarning(function(...) Notify("Guard","Warning: "..tostring((...)),3) end)
 end })
+
+local secKeybind = Sec(Tabs.Misc, "Keybind")
+secKeybind:AddKeybind({ Title = "Toggle UI (F3)", Default = Enum.KeyCode.F3,
+    Callback = function() end })
 
 -- ============================================================
 -- CONFIG TAB
 -- ============================================================
-Sec(Tabs.Config, "Config"):AddButton({ Title = "Save Config", Callback = function()
-    Notify("Config","Saved (manual only)",2)
-end })
+local secConfig = Sec(Tabs.Config, "Config")
+secConfig:AddButton({ Title = "Save Config", Callback = function() Notify("Config","Saved!",2) end })
 
 Notify("Steal An Egg", "v2.0 loaded!", 3)
 
