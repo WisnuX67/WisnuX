@@ -2313,7 +2313,7 @@ local Tabs = {
     Config = Window:CreateTab({ Name = "Config" }),
 }
 
-local function Sec(tab, name) return tab:AddSection(name) end
+local function Sec(tab, name) return tab:AddSection(name, true) end
 
 -- ============================================================
 -- FARM TAB
